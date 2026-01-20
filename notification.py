@@ -280,12 +280,11 @@ class NotificationService:
             emoji = result.get_emoji()
             confidence_stars = result.get_confidence_stars() if hasattr(result, 'get_confidence_stars') else '⭐⭐'
             
-            # 股票名称：优先使用 result.name，如果不可用则尝试获取真实名称
+            # 股票名称：优先使用 result.name，如果不可用则使用统一的获取函数
+            from analyzer import get_stock_name
             stock_name = result.name if result.name and not result.name.startswith('股票') else None
             if not stock_name:
-                stock_name = self._get_stock_name_for_email(result.code)
-            if not stock_name:
-                stock_name = f'股票{result.code}'
+                stock_name = get_stock_name(result.code)
             
             report_lines.extend([
                 f"### {emoji} {stock_name} ({result.code})",
@@ -485,12 +484,11 @@ class NotificationService:
             signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
             dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
             
-            # 股票名称：优先使用 result.name，如果不可用则尝试获取真实名称
+            # 股票名称：优先使用 result.name，如果不可用则使用统一的获取函数
+            from analyzer import get_stock_name
             stock_name = result.name if result.name and not result.name.startswith('股票') else None
             if not stock_name:
-                stock_name = self._get_stock_name_for_email(result.code)
-            if not stock_name:
-                stock_name = f'股票{result.code}'
+                stock_name = get_stock_name(result.code)
             
             report_lines.extend([
                 f"## {signal_emoji} {stock_name} ({result.code})",
@@ -749,12 +747,11 @@ class NotificationService:
             battle = dashboard.get('battle_plan', {}) if dashboard else {}
             intel = dashboard.get('intelligence', {}) if dashboard else {}
             
-            # 股票名称：优先使用 result.name，如果不可用则尝试获取真实名称
+            # 股票名称：优先使用 result.name，如果不可用则使用统一的获取函数
+            from analyzer import get_stock_name
             stock_name = result.name if result.name and not result.name.startswith('股票') else None
             if not stock_name:
-                stock_name = self._get_stock_name_for_email(result.code)
-            if not stock_name:
-                stock_name = f'股票{result.code}'
+                stock_name = get_stock_name(result.code)
             
             # 标题行：信号等级 + 股票名称
             lines.append(f"### {signal_emoji} **{signal_text}** | {stock_name}({result.code})")
@@ -935,12 +932,11 @@ class NotificationService:
         battle = dashboard.get('battle_plan', {}) if dashboard else {}
         intel = dashboard.get('intelligence', {}) if dashboard else {}
         
-        # 股票名称：优先使用 result.name，如果不可用则尝试获取真实名称
+        # 股票名称：优先使用 result.name，如果不可用则使用统一的获取函数
+        from analyzer import get_stock_name
         stock_name = result.name if result.name and not result.name.startswith('股票') else None
         if not stock_name:
-            stock_name = self._get_stock_name_for_email(result.code)
-        if not stock_name:
-            stock_name = f'股票{result.code}'
+            stock_name = get_stock_name(result.code)
         
         lines = [
             f"## {signal_emoji} {stock_name} ({result.code})",
@@ -1704,10 +1700,12 @@ class NotificationService:
         if not codes:
             return markdown_text
         
+        from analyzer import get_stock_name
         name_map: Dict[str, str] = {}
         for code in codes:
-            name = self._get_stock_name_for_email(code)
-            if name:
+            name = get_stock_name(code)
+            # 只使用真实名称，不使用默认格式
+            if name and not name.startswith('股票'):
                 name_map[code] = name
         
         if not name_map:
@@ -1728,45 +1726,6 @@ class NotificationService:
         
         return title_re.sub(_rewrite_title_line, markdown_text)
     
-    def _get_stock_name_for_email(self, stock_code: str) -> Optional[str]:
-        """
-        仅用于邮件的股票名称解析：尽量从已有映射/实时行情获取名称。
-        失败则返回 None（不强行改动展示）。
-        """
-        if not stock_code or not re.fullmatch(r'\d{6}', stock_code):
-            return None
-        
-        # 1) 先尝试 analyzer.STOCK_NAME_MAP（离线、稳定）
-        try:
-            from analyzer import STOCK_NAME_MAP  # type: ignore
-            name = STOCK_NAME_MAP.get(stock_code)
-            if name:
-                return name
-        except Exception:
-            pass
-        
-        # 2) 再尝试实时行情（可能更全面）
-        try:
-            from data_provider import DataFetcherManager  # 延迟导入，避免不必要依赖
-            if not hasattr(self, "_email_stock_name_cache"):
-                setattr(self, "_email_stock_name_cache", {})
-            cache: Dict[str, str] = getattr(self, "_email_stock_name_cache")
-            if stock_code in cache:
-                return cache[stock_code]
-            
-            if not hasattr(self, "_email_fetcher_manager"):
-                setattr(self, "_email_fetcher_manager", DataFetcherManager())
-            manager = getattr(self, "_email_fetcher_manager")
-            
-            quote = manager.get_realtime_quote(stock_code)
-            name = getattr(quote, "name", None) if quote else None
-            if isinstance(name, str) and name.strip():
-                cache[stock_code] = name.strip()
-                return cache[stock_code]
-        except Exception as e:
-            logger.debug(f"邮件解析股票名称失败 {stock_code}: {e}")
-        
-        return None
     
     def _markdown_to_html(self, markdown_text: str) -> str:
         """
@@ -1839,16 +1798,11 @@ class NotificationService:
         for result in results:
             signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
             
-            # 优先使用 result.name，如果不可用则尝试通过其他方式获取
+            # 优先使用 result.name，如果不可用则使用统一的获取函数
+            from analyzer import get_stock_name
             stock_name = result.name if result.name and not result.name.startswith('股票') else None
-            
-            # 如果名称不可用，尝试通过股票代码获取名称
             if not stock_name:
-                stock_name = self._get_stock_name_for_email(result.code)
-            
-            # 如果仍然无法获取，使用默认格式
-            if not stock_name:
-                stock_name = f'股票{result.code}'
+                stock_name = get_stock_name(result.code)
             
             stock_info = {
                 'name': stock_name,

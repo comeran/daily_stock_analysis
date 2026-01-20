@@ -48,6 +48,68 @@ STOCK_NAME_MAP = {
     '600028': '中国石化',
 }
 
+# 股票名称缓存（模块级缓存，避免重复请求）
+_stock_name_cache: Dict[str, str] = {}
+
+
+def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
+    """
+    统一的股票名称获取函数
+    
+    采用三层获取策略：
+    1. 优先从 STOCK_NAME_MAP 获取（离线、稳定）
+    2. 其次尝试从实时行情获取（通过 DataFetcherManager）
+    3. 如果都失败，才使用默认格式 f'股票{code}'
+    
+    支持缓存机制，避免重复请求实时行情。
+    
+    Args:
+        stock_code: 股票代码（6位数字）
+        use_cache: 是否使用缓存（默认 True）
+        
+    Returns:
+        股票名称，如果无法获取则返回 f'股票{code}'
+    """
+    if not stock_code or not isinstance(stock_code, str):
+        return f'股票{stock_code}'
+    
+    # 检查缓存
+    if use_cache and stock_code in _stock_name_cache:
+        return _stock_name_cache[stock_code]
+    
+    # 1) 优先从 STOCK_NAME_MAP 获取（离线、稳定）
+    name = STOCK_NAME_MAP.get(stock_code)
+    if name:
+        if use_cache:
+            _stock_name_cache[stock_code] = name
+        return name
+    
+    # 2) 尝试从实时行情获取（可能更全面）
+    try:
+        from data_provider import DataFetcherManager
+        
+        # 使用模块级单例，避免重复创建
+        if not hasattr(get_stock_name, '_fetcher_manager'):
+            get_stock_name._fetcher_manager = DataFetcherManager()
+        
+        manager = get_stock_name._fetcher_manager
+        quote = manager.get_realtime_quote(stock_code)
+        
+        if quote and hasattr(quote, 'name') and quote.name:
+            name = quote.name.strip()
+            if name and not name.startswith('股票'):
+                if use_cache:
+                    _stock_name_cache[stock_code] = name
+                return name
+    except Exception as e:
+        logger.debug(f"从实时行情获取股票名称失败 {stock_code}: {e}")
+    
+    # 3) 如果都失败，使用默认格式
+    default_name = f'股票{stock_code}'
+    if use_cache:
+        _stock_name_cache[stock_code] = default_name
+    return default_name
+
 
 @dataclass
 class AnalysisResult:
@@ -727,8 +789,8 @@ class GeminiAnalyzer:
             if 'realtime' in context and context['realtime'].get('name'):
                 name = context['realtime']['name']
             else:
-                # 最后从映射表获取
-                name = STOCK_NAME_MAP.get(code, f'股票{code}')
+                # 使用统一的获取函数
+                name = get_stock_name(code)
         
         # 如果模型不可用，返回默认结果
         if not self.is_available():
@@ -832,7 +894,7 @@ class GeminiAnalyzer:
         # 优先使用上下文中的股票名称（从 realtime_quote 获取）
         stock_name = context.get('stock_name', name)
         if not stock_name or stock_name == f'股票{code}':
-            stock_name = STOCK_NAME_MAP.get(code, f'股票{code}')
+            stock_name = get_stock_name(code)
             
         today = context.get('today', {})
         

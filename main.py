@@ -45,7 +45,7 @@ from config import get_config, Config
 from storage import get_db, DatabaseManager
 from data_provider import DataFetcherManager
 from data_provider.akshare_fetcher import AkshareFetcher, RealtimeQuote, ChipDistribution
-from analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
+from analyzer import GeminiAnalyzer, AnalysisResult
 from notification import NotificationService, NotificationChannel, send_daily_report
 from search_service import SearchService, SearchResponse
 from stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
@@ -233,25 +233,22 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None（如果分析失败）
         """
         try:
-            # 获取股票名称（优先从实时行情获取真实名称）
-            stock_name = STOCK_NAME_MAP.get(code, '')
+            # 获取股票名称（使用统一的获取函数）
+            from analyzer import get_stock_name
+            stock_name = get_stock_name(code)
             
             # Step 1: 获取实时行情（量比、换手率等）
             realtime_quote: Optional[RealtimeQuote] = None
             try:
                 realtime_quote = self.akshare_fetcher.get_realtime_quote(code)
                 if realtime_quote:
-                    # 使用实时行情返回的真实股票名称
-                    if realtime_quote.name:
-                        stock_name = realtime_quote.name
+                    # 如果实时行情有名称且与当前不同，更新名称（实时行情更准确）
+                    if realtime_quote.name and realtime_quote.name.strip() and realtime_quote.name != stock_name:
+                        stock_name = realtime_quote.name.strip()
                     logger.info(f"[{code}] {stock_name} 实时行情: 价格={realtime_quote.price}, "
                               f"量比={realtime_quote.volume_ratio}, 换手率={realtime_quote.turnover_rate}%")
             except Exception as e:
                 logger.warning(f"[{code}] 获取实时行情失败: {e}")
-            
-            # 如果还是没有名称，使用代码作为名称
-            if not stock_name:
-                stock_name = f'股票{code}'
             
             # Step 2: 获取筹码分布
             chip_data: Optional[ChipDistribution] = None
