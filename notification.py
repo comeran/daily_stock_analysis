@@ -1803,13 +1803,197 @@ class NotificationService:
         </html>
         """
     
+    def _parse_stock_data_from_markdown(self, markdown_text: str) -> List[Dict[str, Any]]:
+        """
+        从Markdown中解析所有股票的关键信息
+        
+        Returns:
+            股票信息列表，每个包含：name, code, score, trend, advice, emoji
+        """
+        stocks: List[Dict[str, Any]] = []
+        lines = markdown_text.splitlines()
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            # 匹配股票标题：## 🟢 股票名称 (代码)
+            match = re.match(r'^##\s+([🟢🟡🔴⚪])\s+(.+?)\s+\((\d{6})\)\s*$', line)
+            if match:
+                emoji = match.group(1)
+                name = match.group(2).strip()
+                code = match.group(3)
+                
+                # 初始化股票信息
+                stock_info = {
+                    'name': name,
+                    'code': code,
+                    'emoji': emoji,
+                    'score': None,
+                    'trend': None,
+                    'advice': None,
+                }
+                
+                # 向后查找评分、趋势、操作建议（在标题之后的内容中）
+                j = i + 1
+                while j < len(lines) and j < i + 100:  # 最多向后查找100行
+                    next_line = lines[j].strip()
+                    
+                    # 如果遇到下一个股票标题或分隔线，停止查找
+                    if re.match(r'^##\s+[🟢🟡🔴⚪]', next_line) or next_line == '---':
+                        break
+                    
+                    # 查找评分（从核心结论部分，通常格式：**🟢 买入** | 看多，或包含评分数字）
+                    if not stock_info['score']:
+                        # 尝试从包含数字的行中提取评分（通常是sentiment_score）
+                        score_match = re.search(r'(\d{1,3})\s*分', next_line)
+                        if score_match:
+                            score_val = int(score_match.group(1))
+                            if 0 <= score_val <= 100:
+                                stock_info['score'] = score_val
+                    
+                    # 查找趋势预测（通常在核心结论行：**🟢 买入** | 看多）
+                    if not stock_info['trend']:
+                        trend_match = re.search(r'\|\s*(强烈看多|看多|震荡|看空|强烈看空)', next_line)
+                        if trend_match:
+                            stock_info['trend'] = trend_match.group(1)
+                        # 也尝试从其他格式中提取
+                        elif '趋势预测' in next_line:
+                            trend_match2 = re.search(r'(强烈看多|看多|震荡|看空|强烈看空)', next_line)
+                            if trend_match2:
+                                stock_info['trend'] = trend_match2.group(1)
+                    
+                    # 查找操作建议（从核心结论行或操作建议表格）
+                    if not stock_info['advice']:
+                        # 从核心结论行提取：**🟢 买入**
+                        advice_match = re.search(r'\*\*([🟢🟡🔴⚪])\s*(买入|加仓|强烈买入|持有|观望|减仓|卖出|强烈卖出)\*\*', next_line)
+                        if advice_match:
+                            stock_info['advice'] = advice_match.group(2)
+                        # 从操作建议表格中提取
+                        elif '操作建议' in next_line or '空仓者' in next_line or '持仓者' in next_line:
+                            advice_match2 = re.search(r'(买入|加仓|强烈买入|持有|观望|减仓|卖出|强烈卖出)', next_line)
+                            if advice_match2:
+                                stock_info['advice'] = advice_match2.group(1)
+                    
+                    j += 1
+                
+                stocks.append(stock_info)
+            i += 1
+        
+        return stocks
+    
+    def _generate_summary_table_html(self, stocks: List[Dict[str, Any]]) -> str:
+        """
+        生成总结表格HTML
+        
+        Args:
+            stocks: 股票信息列表
+            
+        Returns:
+            总结表格的HTML字符串
+        """
+        if not stocks:
+            return ""
+        
+        # 按评分排序（高分在前）
+        sorted_stocks = sorted(stocks, key=lambda x: x.get('score') or 0, reverse=True)
+        
+        html = ['<div class="summary-section">']
+        html.append('<h2 class="summary-title">📊 股票总结</h2>')
+        html.append('<table class="summary-table">')
+        html.append('<thead><tr>')
+        html.append('<th>股票名称</th>')
+        html.append('<th>代码</th>')
+        html.append('<th>评分</th>')
+        html.append('<th>趋势</th>')
+        html.append('<th>操作建议</th>')
+        html.append('</tr></thead>')
+        html.append('<tbody>')
+        
+        for stock in sorted_stocks:
+            name = stock.get('name', 'N/A')
+            code = stock.get('code', 'N/A')
+            score = stock.get('score')
+            trend = stock.get('trend', 'N/A')
+            advice = stock.get('advice', 'N/A')
+            emoji = stock.get('emoji', '⚪')
+            
+            # 生成评分进度条
+            score_html = 'N/A'
+            if score is not None:
+                score_class = 'score-excellent' if score >= 80 else ('score-good' if score >= 60 else ('score-normal' if score >= 40 else 'score-poor'))
+                score_html = f'<div class="score-container"><span class="score-value {score_class}">{score}</span><div class="score-bar"><div class="score-fill" style="width: {score}%"></div></div></div>'
+            
+            # 生成趋势徽章
+            trend_html = self._generate_trend_badge(trend)
+            
+            # 生成操作建议徽章
+            advice_html = self._generate_advice_badge(advice, emoji)
+            
+            html.append('<tr>')
+            html.append(f'<td class="stock-name"><strong>{name}</strong></td>')
+            html.append(f'<td class="stock-code">{code}</td>')
+            html.append(f'<td class="stock-score">{score_html}</td>')
+            html.append(f'<td class="stock-trend">{trend_html}</td>')
+            html.append(f'<td class="stock-advice">{advice_html}</td>')
+            html.append('</tr>')
+        
+        html.append('</tbody>')
+        html.append('</table>')
+        html.append('</div>')
+        
+        return '\n'.join(html)
+    
+    def _generate_trend_badge(self, trend: str) -> str:
+        """生成趋势徽章HTML"""
+        if not trend or trend == 'N/A':
+            return '<span class="badge badge-gray">N/A</span>'
+        
+        trend_map = {
+            '强烈看多': ('badge-trend-strong-bull', '强烈看多'),
+            '看多': ('badge-trend-bull', '看多'),
+            '震荡': ('badge-trend-neutral', '震荡'),
+            '看空': ('badge-trend-bear', '看空'),
+            '强烈看空': ('badge-trend-strong-bear', '强烈看空'),
+        }
+        
+        badge_class, badge_text = trend_map.get(trend, ('badge-gray', trend))
+        arrow = '↑' if '看多' in trend else ('↓' if '看空' in trend else '→')
+        return f'<span class="badge {badge_class}">{arrow} {badge_text}</span>'
+    
+    def _generate_advice_badge(self, advice: str, emoji: str) -> str:
+        """生成操作建议徽章HTML"""
+        if not advice or advice == 'N/A':
+            return '<span class="badge badge-gray">N/A</span>'
+        
+        advice_map = {
+            '买入': 'badge-advice-buy',
+            '加仓': 'badge-advice-buy',
+            '强烈买入': 'badge-advice-buy',
+            '持有': 'badge-advice-hold',
+            '观望': 'badge-advice-wait',
+            '减仓': 'badge-advice-sell',
+            '卖出': 'badge-advice-sell',
+            '强烈卖出': 'badge-advice-sell',
+        }
+        
+        badge_class = advice_map.get(advice, 'badge-gray')
+        return f'<span class="badge {badge_class}">{emoji} {advice}</span>'
+    
     def _markdown_to_email_html(self, markdown_text: str) -> str:
         """
-        邮件专用 HTML 渲染：
+        邮件专用 HTML 渲染（增强版）：
+        - 解析股票数据并生成总结表格
         - 支持 Markdown 表格渲染成 HTML table
         - 将连续列表项包裹成 ul
         - 更直观的排版与配色（仅邮件）
+        - 图表、徽章、颜色编码等增强功能
         """
+        # 解析股票数据
+        stocks = self._parse_stock_data_from_markdown(markdown_text)
+        
+        # 生成总结表格
+        summary_table = self._generate_summary_table_html(stocks) if stocks else ""
+        
         # 先转义，后做受控替换
         src = (markdown_text or "").replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         lines = src.splitlines()
@@ -1817,6 +2001,7 @@ class NotificationService:
         out: List[str] = []
         i = 0
         in_ul = False
+        in_stock_card = False  # 是否在股票卡片内
         
         def _close_ul() -> None:
             nonlocal in_ul
@@ -1825,20 +2010,22 @@ class NotificationService:
                 in_ul = False
         
         def _emit_paragraph_break() -> None:
-            # 简单空行 -> 段落分隔
             _close_ul()
             out.append('<div class="spacer"></div>')
+        
+        def _close_stock_card() -> None:
+            nonlocal in_stock_card
+            if in_stock_card:
+                out.append('</div>')
+                in_stock_card = False
         
         table_block: List[str] = []
         def _flush_table_block(block: List[str]) -> None:
             if not block:
                 return
             _close_ul()
-            # 过滤空行
             b = [x.strip() for x in block if x.strip()]
-            # 必须包含分隔行
             if len(b) < 2 or not re.search(r'^\|?[-:\s|]+\|?$', b[1]):
-                # 降级：原样输出
                 for raw in block:
                     out.append(f"<div class='mono'>{raw}</div>")
                 return
@@ -1858,21 +2045,22 @@ class NotificationService:
             out.append("<thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead>")
             out.append("<tbody>")
             for r in rows:
-                # 对齐列数
                 if len(r) < len(headers):
                     r = r + [""] * (len(headers) - len(r))
                 out.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in r[:len(headers)]) + "</tr>")
             out.append("</tbody></table>")
         
+        # 处理标题行，插入总结表格
+        title_inserted = False
+        
         while i < len(lines):
             line = lines[i].rstrip("\n")
             raw = line.strip()
             
-            # 表格块（| 开头，直到遇到非表格行）
+            # 表格块
             if raw.startswith("|"):
                 table_block.append(raw)
                 i += 1
-                # 持续收集
                 while i < len(lines) and lines[i].strip().startswith("|"):
                     table_block.append(lines[i].strip())
                     i += 1
@@ -1889,7 +2077,8 @@ class NotificationService:
             # 分隔线
             if raw == "---":
                 _close_ul()
-                out.append("<hr>")
+                _close_stock_card()
+                out.append("<hr class='divider'>")
                 i += 1
                 continue
             
@@ -1899,15 +2088,40 @@ class NotificationService:
                 _close_ul()
                 level = len(m.group(1))
                 text = m.group(2).strip()
-                level = min(max(level, 1), 3)  # 邮件里最多到 h3
-                out.append(f"<h{level}>{text}</h{level}>")
+                level = min(max(level, 1), 3)
+                
+                # 如果是h1，插入总结表格
+                if level == 1 and not title_inserted and summary_table:
+                    out.append(f"<h{level} class='main-title'>{text}</h{level}>")
+                    out.append(summary_table)
+                    out.append('<hr class="divider">')
+                    title_inserted = True
+                # 如果是h2（股票标题），开始新的股票卡片
+                elif level == 2:
+                    _close_stock_card()
+                    # 检查是否是股票标题
+                    if re.match(r'^[🟢🟡🔴⚪]', text):
+                        in_stock_card = True
+                        # 根据emoji确定卡片背景色
+                        card_class = 'stock-card-buy' if '🟢' in text else ('stock-card-sell' if '🔴' in text else ('stock-card-wait' if '🟡' in text else 'stock-card'))
+                        out.append(f'<div class="stock-card {card_class}">')
+                    out.append(f"<h{level} class='stock-title'>{text}</h{level}>")
+                else:
+                    out.append(f"<h{level}>{text}</h{level}>")
                 i += 1
                 continue
             
             # 引用
             if raw.startswith("&gt; "):
                 _close_ul()
-                out.append(f"<blockquote>{raw[5:].strip()}</blockquote>")
+                # 检查是否包含重要信息
+                content = raw[5:].strip()
+                if '风险' in content or '🚨' in content:
+                    out.append(f'<blockquote class="blockquote-risk">{content}</blockquote>')
+                elif '利好' in content or '✨' in content:
+                    out.append(f'<blockquote class="blockquote-positive">{content}</blockquote>')
+                else:
+                    out.append(f'<blockquote>{content}</blockquote>')
                 i += 1
                 continue
             
@@ -1916,12 +2130,22 @@ class NotificationService:
                 if not in_ul:
                     out.append("<ul>")
                     in_ul = True
-                out.append(f"<li>{raw[2:].strip()}</li>")
+                content = raw[2:].strip()
+                # 检查是否是风险警报或利好
+                if '🚨' in content or '风险' in content:
+                    out.append(f'<li class="list-item-risk">{content}</li>')
+                elif '✨' in content or '利好' in content:
+                    out.append(f'<li class="list-item-positive">{content}</li>')
+                else:
+                    out.append(f'<li>{content}</li>')
                 i += 1
                 continue
             
             # 加粗 / 斜体（受控替换）
             txt = raw
+            # 增强重要内容的突出显示
+            txt = re.sub(r'\*\*评分[：:]\s*(\d+)\s*\*\*', r'<strong class="highlight-score">评分：\1</strong>', txt)
+            txt = re.sub(r'\*\*(买入|加仓|强烈买入|卖出|减仓|强烈卖出|持有|观望)\*\*', r'<strong class="highlight-advice">\1</strong>', txt)
             txt = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', txt)
             txt = re.sub(r'\*(.+?)\*', r'<em>\1</em>', txt)
             
@@ -1930,74 +2154,275 @@ class NotificationService:
             i += 1
         
         _close_ul()
+        _close_stock_card()
         
         body_html = "\n".join(out)
-        return f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body {{
+        
+        # 增强的CSS样式
+        enhanced_css = """
+    body {
       margin: 0;
       padding: 0;
       background: #f6f8fb;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
       color: #111827;
-      line-height: 1.7;
-    }}
-    .wrap {{
+      line-height: 1.5;
+    }
+    .wrap {
       max-width: 920px;
       margin: 0 auto;
       padding: 24px 16px;
-    }}
-    .card {{
+    }
+    .card {
       background: #ffffff;
       border: 1px solid #e5e7eb;
       border-radius: 14px;
       padding: 20px 18px;
       box-shadow: 0 6px 18px rgba(17, 24, 39, 0.06);
-    }}
-    h1, h2, h3 {{
-      margin: 0.2em 0 0.6em 0;
-      line-height: 1.25;
+    }
+    /* 标题放大 */
+    h1, h2, h3 {
+      margin: 0.2em 0 0.4em 0;
+      line-height: 1.3;
       color: #0f172a;
-    }}
-    h1 {{ font-size: 22px; }}
-    h2 {{ font-size: 18px; margin-top: 22px; padding-top: 14px; border-top: 1px dashed #e5e7eb; }}
-    h3 {{ font-size: 15px; color: #111827; }}
-    p {{ margin: 0.45em 0; }}
-    hr {{ border: none; border-top: 1px solid #e5e7eb; margin: 18px 0; }}
-    blockquote {{
-      margin: 12px 0;
-      padding: 10px 12px;
+      font-weight: 700;
+    }
+    h1.main-title { 
+      font-size: 32px; 
+      margin-bottom: 16px;
+      border-bottom: 3px solid #2563eb;
+      padding-bottom: 12px;
+    }
+    h2 { 
+      font-size: 24px; 
+      margin-top: 32px; 
+      padding-top: 16px; 
+      border-top: 2px solid #e5e7eb; 
+    }
+    h2.stock-title {
+      font-size: 22px;
+      margin-top: 24px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
+      border-left: 4px solid #2563eb;
+      border-radius: 8px;
+    }
+    h3 { 
+      font-size: 20px; 
+      color: #111827;
+      margin-top: 16px;
+    }
+    /* 文字更紧密 */
+    p { 
+      margin: 0.25em 0; 
+      line-height: 1.4;
+    }
+    hr.divider { 
+      border: none; 
+      border-top: 2px solid #cbd5e1; 
+      margin: 24px 0; 
+    }
+    blockquote {
+      margin: 8px 0;
+      padding: 12px 16px;
       border-left: 4px solid #93c5fd;
       background: #eff6ff;
       color: #1f2937;
       border-radius: 8px;
-    }}
-    ul {{ margin: 8px 0 8px 18px; padding: 0; }}
-    li {{ margin: 6px 0; }}
-    table {{
+      line-height: 1.5;
+    }
+    blockquote.blockquote-risk {
+      border-left-color: #ef4444;
+      background: #fef2f2;
+    }
+    blockquote.blockquote-positive {
+      border-left-color: #10b981;
+      background: #ecfdf5;
+    }
+    ul { 
+      margin: 6px 0 6px 20px; 
+      padding: 0; 
+    }
+    li { 
+      margin: 3px 0; 
+      line-height: 1.4;
+    }
+    li.list-item-risk {
+      color: #dc2626;
+      font-weight: 500;
+    }
+    li.list-item-positive {
+      color: #059669;
+      font-weight: 500;
+    }
+    /* 表格样式 */
+    table {
       width: 100%;
       border-collapse: collapse;
-      margin: 10px 0 14px 0;
+      margin: 12px 0 16px 0;
       font-size: 13px;
-    }}
-    th, td {{
+    }
+    th, td {
       border: 1px solid #e5e7eb;
-      padding: 8px 10px;
-      vertical-align: top;
-    }}
-    th {{
+      padding: 10px 12px;
+      vertical-align: middle;
+    }
+    th {
       background: #f3f4f6;
       font-weight: 600;
       text-align: left;
       color: #111827;
-    }}
-    tbody tr:nth-child(even) td {{ background: #fafafa; }}
-    .spacer {{ height: 6px; }}
-    .mono {{
+    }
+    tbody tr:nth-child(even) td { 
+      background: #fafafa; 
+    }
+    tbody tr:hover td {
+      background: #f1f5f9;
+    }
+    /* 总结表格样式 */
+    .summary-section {
+      margin: 20px 0;
+      padding: 16px;
+      background: #f8fafc;
+      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+    }
+    .summary-title {
+      font-size: 22px;
+      margin: 0 0 16px 0;
+      padding: 0;
+      border: none;
+    }
+    .summary-table {
+      font-size: 14px;
+    }
+    .summary-table th {
+      background: #2563eb;
+      color: white;
+      font-weight: 600;
+    }
+    .stock-name {
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .stock-code {
+      font-family: monospace;
+      color: #64748b;
+    }
+    /* 评分进度条 */
+    .score-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .score-value {
+      font-size: 18px;
+      font-weight: 700;
+      min-width: 36px;
+      text-align: right;
+    }
+    .score-excellent { color: #f59e0b; }
+    .score-good { color: #10b981; }
+    .score-normal { color: #f59e0b; }
+    .score-poor { color: #ef4444; }
+    .score-bar {
+      flex: 1;
+      height: 8px;
+      background: #e5e7eb;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .score-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #10b981 100%);
+      transition: width 0.3s;
+    }
+    /* 徽章样式 */
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-gray {
+      background: #e5e7eb;
+      color: #64748b;
+    }
+    /* 趋势徽章 */
+    .badge-trend-strong-bull {
+      background: #065f46;
+      color: white;
+    }
+    .badge-trend-bull {
+      background: #10b981;
+      color: white;
+    }
+    .badge-trend-neutral {
+      background: #6b7280;
+      color: white;
+    }
+    .badge-trend-bear {
+      background: #f59e0b;
+      color: white;
+    }
+    .badge-trend-strong-bear {
+      background: #dc2626;
+      color: white;
+    }
+    /* 操作建议徽章 */
+    .badge-advice-buy {
+      background: #10b981;
+      color: white;
+    }
+    .badge-advice-hold {
+      background: #f59e0b;
+      color: white;
+    }
+    .badge-advice-wait {
+      background: #6b7280;
+      color: white;
+    }
+    .badge-advice-sell {
+      background: #ef4444;
+      color: white;
+    }
+    /* 股票卡片 */
+    .stock-card {
+      margin: 24px 0;
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid #e5e7eb;
+      background: #ffffff;
+    }
+    .stock-card-buy {
+      border-left: 4px solid #10b981;
+      background: linear-gradient(90deg, #ecfdf5 0%, #ffffff 10%);
+    }
+    .stock-card-sell {
+      border-left: 4px solid #ef4444;
+      background: linear-gradient(90deg, #fef2f2 0%, #ffffff 10%);
+    }
+    .stock-card-wait {
+      border-left: 4px solid #f59e0b;
+      background: linear-gradient(90deg, #fffbeb 0%, #ffffff 10%);
+    }
+    /* 重点突出 */
+    .highlight-score {
+      font-size: 20px;
+      color: #2563eb;
+    }
+    .highlight-advice {
+      font-size: 16px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: #eff6ff;
+    }
+    .spacer { 
+      height: 4px; 
+    }
+    .mono {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
       white-space: pre-wrap;
       background: #f8fafc;
@@ -2006,7 +2431,38 @@ class NotificationService:
       padding: 10px 12px;
       margin: 10px 0;
       color: #334155;
-    }}
+    }
+    /* 响应式 */
+    @media (max-width: 600px) {
+      .wrap {
+        padding: 16px 12px;
+      }
+      .card {
+        padding: 16px 12px;
+      }
+      h1.main-title {
+        font-size: 24px;
+      }
+      h2 {
+        font-size: 20px;
+      }
+      .summary-table {
+        font-size: 12px;
+      }
+      .summary-table th,
+      .summary-table td {
+        padding: 6px 8px;
+      }
+    }
+"""
+        
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+{enhanced_css}
   </style>
 </head>
 <body>
