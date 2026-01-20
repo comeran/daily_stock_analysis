@@ -1601,8 +1601,9 @@ class NotificationService:
                 date_str = datetime.now().strftime('%Y-%m-%d')
                 subject = f"📈 A股智能分析报告 - {date_str}"
             
-            # 将 Markdown 转换为简单 HTML
-            html_content = self._markdown_to_html(content)
+            # 邮件专用：优化展示（更直观的 HTML + 尽可能把“股票代码”变成“股票名称（代码）”）
+            email_markdown = self._prepare_email_markdown(content)
+            html_content = self._markdown_to_email_html(email_markdown)
             
             # 构建邮件
             msg = MIMEMultipart('alternative')
@@ -1657,6 +1658,94 @@ class NotificationService:
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
             return False
+    
+    def _prepare_email_markdown(self, markdown_text: str) -> str:
+        """
+        邮件发送前的 Markdown 预处理：
+        - 尽可能把“股票名称（代码）”补全（仅邮件，不影响其他渠道）
+        """
+        try:
+            return self._replace_stock_code_with_name_for_email(markdown_text)
+        except Exception as e:
+            logger.warning(f"邮件 Markdown 预处理失败，降级使用原始内容: {e}")
+            return markdown_text
+    
+    def _replace_stock_code_with_name_for_email(self, markdown_text: str) -> str:
+        """
+        仅用于邮件：将标题行中的股票展示统一为“股票名称（代码）”。
+        
+        主要匹配 generate_dashboard_report 产出的格式：
+        '## 🟢 XXX (600519)'
+        """
+        # 收集所有出现在二级标题中的股票代码
+        title_re = re.compile(r'^(##\s+.*?\()\s*(?P<code>\d{6})\s*\)\s*$', flags=re.MULTILINE)
+        codes = list(dict.fromkeys(m.group('code') for m in title_re.finditer(markdown_text)))
+        if not codes:
+            return markdown_text
+        
+        name_map: Dict[str, str] = {}
+        for code in codes:
+            name = self._get_stock_name_for_email(code)
+            if name:
+                name_map[code] = name
+        
+        if not name_map:
+            return markdown_text
+        
+        # 替换标题中的 name 部分（保留 emoji / 信号）
+        def _rewrite_title_line(m: re.Match) -> str:
+            line = m.group(0)
+            code = m.group('code')
+            name = name_map.get(code)
+            if not name:
+                return line
+            # 把 " (code)" 前面的末尾部分替换成 "name"
+            # 例: "## 🟢 股票600519 (600519)" -> "## 🟢 贵州茅台 (600519)"
+            return re.sub(r'^(##\s+.*?\s)([^()\n]+?)(\s*\(' + re.escape(code) + r'\)\s*)$',
+                          lambda x: f"{x.group(1)}{name}{x.group(3)}",
+                          line)
+        
+        return title_re.sub(_rewrite_title_line, markdown_text)
+    
+    def _get_stock_name_for_email(self, stock_code: str) -> Optional[str]:
+        """
+        仅用于邮件的股票名称解析：尽量从已有映射/实时行情获取名称。
+        失败则返回 None（不强行改动展示）。
+        """
+        if not stock_code or not re.fullmatch(r'\d{6}', stock_code):
+            return None
+        
+        # 1) 先尝试 analyzer.STOCK_NAME_MAP（离线、稳定）
+        try:
+            from analyzer import STOCK_NAME_MAP  # type: ignore
+            name = STOCK_NAME_MAP.get(stock_code)
+            if name:
+                return name
+        except Exception:
+            pass
+        
+        # 2) 再尝试实时行情（可能更全面）
+        try:
+            from data_provider import DataFetcherManager  # 延迟导入，避免不必要依赖
+            if not hasattr(self, "_email_stock_name_cache"):
+                setattr(self, "_email_stock_name_cache", {})
+            cache: Dict[str, str] = getattr(self, "_email_stock_name_cache")
+            if stock_code in cache:
+                return cache[stock_code]
+            
+            if not hasattr(self, "_email_fetcher_manager"):
+                setattr(self, "_email_fetcher_manager", DataFetcherManager())
+            manager = getattr(self, "_email_fetcher_manager")
+            
+            quote = manager.get_realtime_quote(stock_code)
+            name = getattr(quote, "name", None) if quote else None
+            if isinstance(name, str) and name.strip():
+                cache[stock_code] = name.strip()
+                return cache[stock_code]
+        except Exception as e:
+            logger.debug(f"邮件解析股票名称失败 {stock_code}: {e}")
+        
+        return None
     
     def _markdown_to_html(self, markdown_text: str) -> str:
         """
@@ -1713,6 +1802,221 @@ class NotificationService:
         </body>
         </html>
         """
+    
+    def _markdown_to_email_html(self, markdown_text: str) -> str:
+        """
+        邮件专用 HTML 渲染：
+        - 支持 Markdown 表格渲染成 HTML table
+        - 将连续列表项包裹成 ul
+        - 更直观的排版与配色（仅邮件）
+        """
+        # 先转义，后做受控替换
+        src = (markdown_text or "").replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        lines = src.splitlines()
+        
+        out: List[str] = []
+        i = 0
+        in_ul = False
+        
+        def _close_ul() -> None:
+            nonlocal in_ul
+            if in_ul:
+                out.append("</ul>")
+                in_ul = False
+        
+        def _emit_paragraph_break() -> None:
+            # 简单空行 -> 段落分隔
+            _close_ul()
+            out.append('<div class="spacer"></div>')
+        
+        table_block: List[str] = []
+        def _flush_table_block(block: List[str]) -> None:
+            if not block:
+                return
+            _close_ul()
+            # 过滤空行
+            b = [x.strip() for x in block if x.strip()]
+            # 必须包含分隔行
+            if len(b) < 2 or not re.search(r'^\|?[-:\s|]+\|?$', b[1]):
+                # 降级：原样输出
+                for raw in block:
+                    out.append(f"<div class='mono'>{raw}</div>")
+                return
+            
+            def _split_row(row: str) -> List[str]:
+                r = row.strip()
+                if r.startswith("|"):
+                    r = r[1:]
+                if r.endswith("|"):
+                    r = r[:-1]
+                return [c.strip() for c in r.split("|")]
+            
+            headers = _split_row(b[0])
+            rows = [_split_row(r) for r in b[2:]] if len(b) > 2 else []
+            
+            out.append("<table>")
+            out.append("<thead><tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr></thead>")
+            out.append("<tbody>")
+            for r in rows:
+                # 对齐列数
+                if len(r) < len(headers):
+                    r = r + [""] * (len(headers) - len(r))
+                out.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in r[:len(headers)]) + "</tr>")
+            out.append("</tbody></table>")
+        
+        while i < len(lines):
+            line = lines[i].rstrip("\n")
+            raw = line.strip()
+            
+            # 表格块（| 开头，直到遇到非表格行）
+            if raw.startswith("|"):
+                table_block.append(raw)
+                i += 1
+                # 持续收集
+                while i < len(lines) and lines[i].strip().startswith("|"):
+                    table_block.append(lines[i].strip())
+                    i += 1
+                _flush_table_block(table_block)
+                table_block = []
+                continue
+            
+            # 空行
+            if raw == "":
+                _emit_paragraph_break()
+                i += 1
+                continue
+            
+            # 分隔线
+            if raw == "---":
+                _close_ul()
+                out.append("<hr>")
+                i += 1
+                continue
+            
+            # 标题
+            m = re.match(r'^(#{1,6})\s+(.+)$', raw)
+            if m:
+                _close_ul()
+                level = len(m.group(1))
+                text = m.group(2).strip()
+                level = min(max(level, 1), 3)  # 邮件里最多到 h3
+                out.append(f"<h{level}>{text}</h{level}>")
+                i += 1
+                continue
+            
+            # 引用
+            if raw.startswith("&gt; "):
+                _close_ul()
+                out.append(f"<blockquote>{raw[5:].strip()}</blockquote>")
+                i += 1
+                continue
+            
+            # 列表
+            if raw.startswith("- "):
+                if not in_ul:
+                    out.append("<ul>")
+                    in_ul = True
+                out.append(f"<li>{raw[2:].strip()}</li>")
+                i += 1
+                continue
+            
+            # 加粗 / 斜体（受控替换）
+            txt = raw
+            txt = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', txt)
+            txt = re.sub(r'\*(.+?)\*', r'<em>\1</em>', txt)
+            
+            _close_ul()
+            out.append(f"<p>{txt}</p>")
+            i += 1
+        
+        _close_ul()
+        
+        body_html = "\n".join(out)
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {{
+      margin: 0;
+      padding: 0;
+      background: #f6f8fb;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      color: #111827;
+      line-height: 1.7;
+    }}
+    .wrap {{
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 24px 16px;
+    }}
+    .card {{
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      padding: 20px 18px;
+      box-shadow: 0 6px 18px rgba(17, 24, 39, 0.06);
+    }}
+    h1, h2, h3 {{
+      margin: 0.2em 0 0.6em 0;
+      line-height: 1.25;
+      color: #0f172a;
+    }}
+    h1 {{ font-size: 22px; }}
+    h2 {{ font-size: 18px; margin-top: 22px; padding-top: 14px; border-top: 1px dashed #e5e7eb; }}
+    h3 {{ font-size: 15px; color: #111827; }}
+    p {{ margin: 0.45em 0; }}
+    hr {{ border: none; border-top: 1px solid #e5e7eb; margin: 18px 0; }}
+    blockquote {{
+      margin: 12px 0;
+      padding: 10px 12px;
+      border-left: 4px solid #93c5fd;
+      background: #eff6ff;
+      color: #1f2937;
+      border-radius: 8px;
+    }}
+    ul {{ margin: 8px 0 8px 18px; padding: 0; }}
+    li {{ margin: 6px 0; }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 14px 0;
+      font-size: 13px;
+    }}
+    th, td {{
+      border: 1px solid #e5e7eb;
+      padding: 8px 10px;
+      vertical-align: top;
+    }}
+    th {{
+      background: #f3f4f6;
+      font-weight: 600;
+      text-align: left;
+      color: #111827;
+    }}
+    tbody tr:nth-child(even) td {{ background: #fafafa; }}
+    .spacer {{ height: 6px; }}
+    .mono {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+      white-space: pre-wrap;
+      background: #f8fafc;
+      border: 1px dashed #e5e7eb;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin: 10px 0;
+      color: #334155;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      {body_html}
+    </div>
+  </div>
+</body>
+</html>"""
     
     def send_to_telegram(self, content: str) -> bool:
         """
