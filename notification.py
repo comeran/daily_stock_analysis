@@ -1819,7 +1819,17 @@ class NotificationService:
         
         for result in results:
             signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
-            stock_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+            
+            # 优先使用 result.name，如果不可用则尝试通过其他方式获取
+            stock_name = result.name if result.name and not result.name.startswith('股票') else None
+            
+            # 如果名称不可用，尝试通过股票代码获取名称
+            if not stock_name:
+                stock_name = self._get_stock_name_for_email(result.code)
+            
+            # 如果仍然无法获取，使用默认格式
+            if not stock_name:
+                stock_name = f'股票{result.code}'
             
             stock_info = {
                 'name': stock_name,
