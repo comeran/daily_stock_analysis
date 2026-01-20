@@ -280,8 +280,15 @@ class NotificationService:
             emoji = result.get_emoji()
             confidence_stars = result.get_confidence_stars() if hasattr(result, 'get_confidence_stars') else '⭐⭐'
             
+            # 股票名称：优先使用 result.name，如果不可用则尝试获取真实名称
+            stock_name = result.name if result.name and not result.name.startswith('股票') else None
+            if not stock_name:
+                stock_name = self._get_stock_name_for_email(result.code)
+            if not stock_name:
+                stock_name = f'股票{result.code}'
+            
             report_lines.extend([
-                f"### {emoji} {result.name} ({result.code})",
+                f"### {emoji} {stock_name} ({result.code})",
                 "",
                 f"**操作建议：{result.operation_advice}** | **综合评分：{result.sentiment_score}分** | **趋势预测：{result.trend_prediction}** | **置信度：{confidence_stars}**",
                 "",
@@ -478,8 +485,12 @@ class NotificationService:
             signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
             dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
             
-            # 股票名称（优先使用 dashboard 或 result 中的名称）
-            stock_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+            # 股票名称：优先使用 result.name，如果不可用则尝试获取真实名称
+            stock_name = result.name if result.name and not result.name.startswith('股票') else None
+            if not stock_name:
+                stock_name = self._get_stock_name_for_email(result.code)
+            if not stock_name:
+                stock_name = f'股票{result.code}'
             
             report_lines.extend([
                 f"## {signal_emoji} {stock_name} ({result.code})",
@@ -738,8 +749,12 @@ class NotificationService:
             battle = dashboard.get('battle_plan', {}) if dashboard else {}
             intel = dashboard.get('intelligence', {}) if dashboard else {}
             
-            # 股票名称
-            stock_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+            # 股票名称：优先使用 result.name，如果不可用则尝试获取真实名称
+            stock_name = result.name if result.name and not result.name.startswith('股票') else None
+            if not stock_name:
+                stock_name = self._get_stock_name_for_email(result.code)
+            if not stock_name:
+                stock_name = f'股票{result.code}'
             
             # 标题行：信号等级 + 股票名称
             lines.append(f"### {signal_emoji} **{signal_text}** | {stock_name}({result.code})")
@@ -920,8 +935,12 @@ class NotificationService:
         battle = dashboard.get('battle_plan', {}) if dashboard else {}
         intel = dashboard.get('intelligence', {}) if dashboard else {}
         
-        # 股票名称
-        stock_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+        # 股票名称：优先使用 result.name，如果不可用则尝试获取真实名称
+        stock_name = result.name if result.name and not result.name.startswith('股票') else None
+        if not stock_name:
+            stock_name = self._get_stock_name_for_email(result.code)
+        if not stock_name:
+            stock_name = f'股票{result.code}'
         
         lines = [
             f"## {signal_emoji} {stock_name} ({result.code})",
