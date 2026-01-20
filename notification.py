@@ -1576,13 +1576,14 @@ class NotificationService:
 
         return "\n".join(lines).strip()
     
-    def send_to_email(self, content: str, subject: Optional[str] = None) -> bool:
+    def send_to_email(self, content: str, subject: Optional[str] = None, results: Optional[List[AnalysisResult]] = None) -> bool:
         """
         通过 SMTP 发送邮件（自动识别 SMTP 服务器）
         
         Args:
             content: 邮件内容（支持 Markdown，会转换为 HTML）
             subject: 邮件主题（可选，默认自动生成）
+            results: 分析结果列表（可选，如果提供则直接从结果中提取股票信息，避免从Markdown解析）
             
         Returns:
             是否发送成功
@@ -1603,7 +1604,8 @@ class NotificationService:
             
             # 邮件专用：优化展示（更直观的 HTML + 尽可能把“股票代码”变成“股票名称（代码）”）
             email_markdown = self._prepare_email_markdown(content)
-            html_content = self._markdown_to_email_html(email_markdown)
+            # 如果提供了 results，直接使用，否则从 Markdown 解析
+            html_content = self._markdown_to_email_html(email_markdown, results=results)
             
             # 构建邮件
             msg = MIMEMultipart('alternative')
@@ -1803,6 +1805,34 @@ class NotificationService:
         </html>
         """
     
+    def _extract_stocks_from_results(self, results: List[AnalysisResult]) -> List[Dict[str, Any]]:
+        """
+        直接从 AnalysisResult 列表中提取股票信息
+        
+        Args:
+            results: 分析结果列表
+            
+        Returns:
+            股票信息列表
+        """
+        stocks: List[Dict[str, Any]] = []
+        
+        for result in results:
+            signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
+            stock_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+            
+            stock_info = {
+                'name': stock_name,
+                'code': result.code,
+                'emoji': signal_emoji,
+                'score': result.sentiment_score,
+                'trend': result.trend_prediction,
+                'advice': result.operation_advice,
+            }
+            stocks.append(stock_info)
+        
+        return stocks
+    
     def _parse_stock_data_from_markdown(self, markdown_text: str) -> List[Dict[str, Any]]:
         """
         从Markdown中解析所有股票的关键信息
@@ -1979,7 +2009,7 @@ class NotificationService:
         badge_class = advice_map.get(advice, 'badge-gray')
         return f'<span class="badge {badge_class}">{emoji} {advice}</span>'
     
-    def _markdown_to_email_html(self, markdown_text: str) -> str:
+    def _markdown_to_email_html(self, markdown_text: str, results: Optional[List[AnalysisResult]] = None) -> str:
         """
         邮件专用 HTML 渲染（增强版）：
         - 解析股票数据并生成总结表格
@@ -1987,9 +2017,16 @@ class NotificationService:
         - 将连续列表项包裹成 ul
         - 更直观的排版与配色（仅邮件）
         - 图表、徽章、颜色编码等增强功能
+        
+        Args:
+            markdown_text: Markdown 格式的内容
+            results: 分析结果列表（可选，如果提供则直接使用，避免从Markdown解析）
         """
-        # 解析股票数据
-        stocks = self._parse_stock_data_from_markdown(markdown_text)
+        # 解析股票数据：优先使用 results，否则从 Markdown 解析
+        if results:
+            stocks = self._extract_stocks_from_results(results)
+        else:
+            stocks = self._parse_stock_data_from_markdown(markdown_text)
         
         # 生成总结表格
         summary_table = self._generate_summary_table_html(stocks) if stocks else ""
