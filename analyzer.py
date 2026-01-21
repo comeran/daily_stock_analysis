@@ -106,9 +106,15 @@ def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
     if not normalized:
         return f"股票{stock_code}"
     
-    # 检查缓存
+    # 检查缓存（但跳过默认名称的缓存）
     if use_cache and normalized in _stock_name_cache:
-        return _stock_name_cache[normalized]
+        cached_name = _stock_name_cache[normalized]
+        # 如果缓存的是真实名称（不是默认格式），直接返回
+        if cached_name and not cached_name.startswith('股票'):
+            return cached_name
+        # 如果缓存的是默认格式，清除缓存并重新获取
+        elif cached_name.startswith('股票'):
+            del _stock_name_cache[normalized]
     
     # 1) 优先从 STOCK_NAME_MAP 获取（离线、稳定）
     name = STOCK_NAME_MAP.get(normalized)
@@ -126,16 +132,43 @@ def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
             get_stock_name._fetcher_manager = DataFetcherManager()
         
         manager = get_stock_name._fetcher_manager
+        
+        # 先尝试使用规范化后的代码
         quote = manager.get_realtime_quote(normalized)
         
-        if quote and hasattr(quote, 'name') and quote.name:
-            name = quote.name.strip()
-            if name and not name.startswith('股票'):
-                if use_cache:
-                    _stock_name_cache[normalized] = name
-                return name
+        # 如果失败，尝试使用原始代码（可能实时行情API需要原始格式）
+        if not quote and normalized != stock_code:
+            logger.debug(f"使用规范化代码 {normalized} 获取实时行情失败，尝试使用原始代码 {stock_code}")
+            quote = manager.get_realtime_quote(stock_code)
+        
+        if quote:
+            if hasattr(quote, 'name'):
+                name = quote.name
+                # 处理各种可能的空值情况
+                if name:
+                    if isinstance(name, str):
+                        name = name.strip()
+                    else:
+                        name = str(name).strip()
+                    
+                    # 确保名称有效（不是空字符串，不是"股票"开头，不是纯数字）
+                    if name and not name.startswith('股票') and not name.isdigit() and len(name) > 0:
+                        if use_cache:
+                            _stock_name_cache[normalized] = name
+                        logger.debug(f"从实时行情获取股票名称成功: {normalized} -> {name}")
+                        return name
+                    else:
+                        logger.debug(f"实时行情返回的名称无效: {normalized} -> '{name}' (空或格式不正确)")
+                else:
+                    logger.debug(f"实时行情返回的名称为空: {normalized}")
+            else:
+                logger.debug(f"实时行情对象没有name属性: {normalized}")
+        else:
+            logger.debug(f"无法获取实时行情: {normalized} (quote为None)")
     except Exception as e:
-        logger.debug(f"从实时行情获取股票名称失败 {normalized}: {e}")
+        logger.warning(f"从实时行情获取股票名称失败 {normalized}: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
     
     # 3) 如果都失败，使用默认格式
     # 注意：不要缓存默认名，否则一次失败会导致后续永远无法更新为真实名称
