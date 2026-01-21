@@ -348,6 +348,43 @@ class DataFetcherManager:
         logger.error(error_summary)
         raise DataFetchError(error_summary)
     
+    def get_realtime_quote(self, stock_code: str):
+        """
+        获取实时行情数据（自动切换数据源）
+        
+        故障切换策略：
+        1. 从最高优先级数据源开始尝试
+        2. 捕获异常后自动切换到下一个
+        3. 所有数据源失败后返回 None
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            实时行情对象（RealtimeQuote 或 EfinanceRealtimeQuote），获取失败返回 None
+        """
+        for fetcher in self._fetchers:
+            try:
+                # 检查 fetcher 是否有 get_realtime_quote 方法
+                if not hasattr(fetcher, 'get_realtime_quote'):
+                    continue
+                
+                logger.debug(f"尝试使用 [{fetcher.name}] 获取 {stock_code} 实时行情...")
+                quote = fetcher.get_realtime_quote(stock_code)
+                
+                if quote is not None:
+                    logger.debug(f"[{fetcher.name}] 成功获取 {stock_code} 实时行情")
+                    return quote
+                    
+            except Exception as e:
+                logger.debug(f"[{fetcher.name}] 获取 {stock_code} 实时行情失败: {e}")
+                # 继续尝试下一个数据源
+                continue
+        
+        # 所有数据源都失败
+        logger.debug(f"所有数据源获取 {stock_code} 实时行情失败")
+        return None
+    
     @property
     def available_fetchers(self) -> List[str]:
         """返回可用数据源名称列表"""
