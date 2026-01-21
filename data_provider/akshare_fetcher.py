@@ -610,15 +610,23 @@ class AkshareFetcher(BaseFetcher):
                         logger.warning(f"[API错误] ak.stock_zh_a_spot_em 获取失败 (attempt {attempt}/2): {e}")
                         time.sleep(min(2 ** attempt, 5))
 
-                # 更新缓存：成功缓存数据；失败也缓存空数据，避免同一轮任务对同一接口反复请求
-                if df is None:
+                # 更新缓存：只缓存成功的数据，失败不缓存（避免后续请求使用空数据）
+                if df is not None and not df.empty:
+                    _realtime_cache['data'] = df
+                    _realtime_cache['timestamp'] = current_time
+                else:
                     logger.error(f"[API错误] ak.stock_zh_a_spot_em 最终失败: {last_error}")
-                    df = pd.DataFrame()
-                _realtime_cache['data'] = df
-                _realtime_cache['timestamp'] = current_time
+                    # 清除缓存，让下次请求可以重新尝试
+                    _realtime_cache['data'] = None
+                    _realtime_cache['timestamp'] = 0
+                    return None
 
+            # 如果缓存为空，清除缓存并返回 None（让调用方可以尝试其他数据源）
             if df is None or df.empty:
                 logger.warning(f"[实时行情] A股实时行情数据为空，跳过 {stock_code}")
+                # 清除无效缓存
+                _realtime_cache['data'] = None
+                _realtime_cache['timestamp'] = 0
                 return None
             
             # 查找指定股票 - 使用灵活的匹配逻辑

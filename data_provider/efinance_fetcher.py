@@ -421,14 +421,28 @@ class EfinanceFetcher(BaseFetcher):
                 api_start = _time.time()
                 
                 # efinance 的实时行情 API
-                df = ef.stock.get_realtime_quotes()
-                
-                api_elapsed = _time.time() - api_start
-                logger.info(f"[API返回] ef.stock.get_realtime_quotes 成功: 返回 {len(df)} 只股票, 耗时 {api_elapsed:.2f}s")
-                
-                # 更新缓存
-                _realtime_cache['data'] = df
-                _realtime_cache['timestamp'] = current_time
+                try:
+                    df = ef.stock.get_realtime_quotes()
+                    
+                    api_elapsed = _time.time() - api_start
+                    logger.info(f"[API返回] ef.stock.get_realtime_quotes 成功: 返回 {len(df)} 只股票, 耗时 {api_elapsed:.2f}s")
+                    
+                    # 只缓存成功的数据
+                    if df is not None and not df.empty:
+                        _realtime_cache['data'] = df
+                        _realtime_cache['timestamp'] = current_time
+                    else:
+                        logger.warning(f"[API返回] ef.stock.get_realtime_quotes 返回空数据")
+                        # 清除缓存
+                        _realtime_cache['data'] = None
+                        _realtime_cache['timestamp'] = 0
+                        return None
+                except Exception as e:
+                    logger.error(f"[API错误] ef.stock.get_realtime_quotes 获取失败: {e}")
+                    # 清除缓存
+                    _realtime_cache['data'] = None
+                    _realtime_cache['timestamp'] = 0
+                    raise
             
             # 查找指定股票 - 使用灵活的匹配逻辑
             # efinance 返回的列名可能是 '股票代码' 或 'code'

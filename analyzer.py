@@ -171,7 +171,45 @@ def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
         import traceback
         logger.debug(traceback.format_exc())
     
-    # 3) 如果都失败，使用默认格式
+    # 3) 尝试从历史数据获取名称（备选方案）
+    # 注意：历史数据在标准化后会移除名称列，所以需要直接从原始数据获取
+    try:
+        from data_provider.efinance_fetcher import EfinanceFetcher
+        from datetime import datetime, timedelta
+        import pandas as pd
+        
+        # 直接使用 efinance fetcher 获取原始数据（因为它的历史数据包含名称）
+        fetcher = EfinanceFetcher()
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d')
+        
+        logger.debug(f"[获取股票名称] 尝试从历史数据获取名称: {normalized} (日期范围: {start_date} ~ {end_date})")
+        
+        # 调用 _fetch_raw_data 获取原始数据（包含名称列）
+        raw_df = fetcher._fetch_raw_data(normalized, start_date, end_date)
+        
+        if raw_df is not None and not raw_df.empty:
+            # 检查原始数据中是否有名称信息
+            name_cols = ['股票名称', '名称', 'name', 'stock_name']
+            for col in name_cols:
+                if col in raw_df.columns:
+                    # 获取第一条非空记录的名称
+                    name_value = raw_df[col].dropna()
+                    if not name_value.empty:
+                        name = str(name_value.iloc[0]).strip()
+                        # 确保名称有效
+                        if name and not name.startswith('股票') and not name.isdigit() and len(name) > 0:
+                            if use_cache:
+                                _stock_name_cache[normalized] = name
+                            logger.info(f"[获取股票名称] 从历史数据获取成功: {normalized} -> {name}")
+                            return name
+        
+        logger.debug(f"[获取股票名称] 历史数据中未找到名称信息: {normalized}")
+    except Exception as e:
+        logger.debug(f"[获取股票名称] 从历史数据获取名称失败 {normalized}: {e}")
+        # 不记录为警告，因为这是备选方案
+    
+    # 4) 如果都失败，使用默认格式
     # 注意：不要缓存默认名，否则一次失败会导致后续永远无法更新为真实名称
     return f"股票{normalized}"
 
