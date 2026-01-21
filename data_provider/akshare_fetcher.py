@@ -621,10 +621,26 @@ class AkshareFetcher(BaseFetcher):
                 logger.warning(f"[实时行情] A股实时行情数据为空，跳过 {stock_code}")
                 return None
             
-            # 查找指定股票
+            # 查找指定股票 - 使用灵活的匹配逻辑
+            # 1. 先尝试精确匹配
             row = df[df['代码'] == stock_code]
+            
+            # 2. 如果精确匹配失败，尝试提取数字部分匹配（处理 '600519' vs '600519.SH' 等情况）
             if row.empty:
-                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情")
+                # 提取 stock_code 中的数字部分
+                import re
+                stock_digits = re.sub(r'\D', '', str(stock_code))
+                if stock_digits:
+                    # 尝试匹配：提取每行代码的数字部分进行比较
+                    df['_code_digits'] = df['代码'].astype(str).apply(lambda x: re.sub(r'\D', '', str(x)))
+                    row = df[df['_code_digits'] == stock_digits]
+                    if not row.empty:
+                        df = df.drop(columns=['_code_digits'])
+                    else:
+                        df = df.drop(columns=['_code_digits'])
+            
+            if row.empty:
+                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情 (尝试了精确匹配和数字匹配)")
                 return None
             
             row = row.iloc[0]

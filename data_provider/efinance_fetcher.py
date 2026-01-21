@@ -430,12 +430,28 @@ class EfinanceFetcher(BaseFetcher):
                 _realtime_cache['data'] = df
                 _realtime_cache['timestamp'] = current_time
             
-            # 查找指定股票
+            # 查找指定股票 - 使用灵活的匹配逻辑
             # efinance 返回的列名可能是 '股票代码' 或 'code'
             code_col = '股票代码' if '股票代码' in df.columns else 'code'
+            
+            # 1. 先尝试精确匹配
             row = df[df[code_col] == stock_code]
+            
+            # 2. 如果精确匹配失败，尝试提取数字部分匹配（处理格式不一致的情况）
             if row.empty:
-                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情")
+                import re
+                stock_digits = re.sub(r'\D', '', str(stock_code))
+                if stock_digits:
+                    # 尝试匹配：提取每行代码的数字部分进行比较
+                    df['_code_digits'] = df[code_col].astype(str).apply(lambda x: re.sub(r'\D', '', str(x)))
+                    row = df[df['_code_digits'] == stock_digits]
+                    if not row.empty:
+                        df = df.drop(columns=['_code_digits'])
+                    else:
+                        df = df.drop(columns=['_code_digits'])
+            
+            if row.empty:
+                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情 (尝试了精确匹配和数字匹配)")
                 return None
             
             row = row.iloc[0]

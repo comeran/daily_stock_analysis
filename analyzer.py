@@ -134,11 +134,12 @@ def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
         manager = get_stock_name._fetcher_manager
         
         # 先尝试使用规范化后的代码
+        logger.debug(f"[获取股票名称] 尝试使用规范化代码 {normalized} 获取实时行情...")
         quote = manager.get_realtime_quote(normalized)
         
         # 如果失败，尝试使用原始代码（可能实时行情API需要原始格式）
         if not quote and normalized != stock_code:
-            logger.debug(f"使用规范化代码 {normalized} 获取实时行情失败，尝试使用原始代码 {stock_code}")
+            logger.debug(f"[获取股票名称] 使用规范化代码 {normalized} 获取实时行情失败，尝试使用原始代码 {stock_code}")
             quote = manager.get_realtime_quote(stock_code)
         
         if quote:
@@ -155,18 +156,18 @@ def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
                     if name and not name.startswith('股票') and not name.isdigit() and len(name) > 0:
                         if use_cache:
                             _stock_name_cache[normalized] = name
-                        logger.debug(f"从实时行情获取股票名称成功: {normalized} -> {name}")
+                        logger.info(f"[获取股票名称] 从实时行情获取成功: {normalized} -> {name}")
                         return name
                     else:
-                        logger.debug(f"实时行情返回的名称无效: {normalized} -> '{name}' (空或格式不正确)")
+                        logger.warning(f"[获取股票名称] 实时行情返回的名称无效: {normalized} -> '{name}' (空或格式不正确)")
                 else:
-                    logger.debug(f"实时行情返回的名称为空: {normalized}")
+                    logger.warning(f"[获取股票名称] 实时行情返回的名称为空: {normalized} (quote.name为空)")
             else:
-                logger.debug(f"实时行情对象没有name属性: {normalized}")
+                logger.warning(f"[获取股票名称] 实时行情对象没有name属性: {normalized} (quote={type(quote)})")
         else:
-            logger.debug(f"无法获取实时行情: {normalized} (quote为None)")
+            logger.warning(f"[获取股票名称] 无法获取实时行情: {normalized} (quote为None, 已尝试规范化代码和原始代码)")
     except Exception as e:
-        logger.warning(f"从实时行情获取股票名称失败 {normalized}: {e}")
+        logger.warning(f"[获取股票名称] 从实时行情获取股票名称失败 {normalized}: {e}")
         import traceback
         logger.debug(traceback.format_exc())
     
