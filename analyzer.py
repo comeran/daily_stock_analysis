@@ -12,6 +12,7 @@ A股自选股智能分析系统 - AI分析层
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
@@ -52,6 +53,37 @@ STOCK_NAME_MAP = {
 _stock_name_cache: Dict[str, str] = {}
 
 
+def _normalize_stock_code_for_name_lookup(stock_code: str) -> str:
+    """
+    规范化股票代码用于名称查询。
+    - A股：提取 6 位数字代码（如 600519）
+    - 港股：保留 hk 前缀（如 hk00700）或 5 位数字（如 00700）
+    """
+    if stock_code is None:
+        return ""
+    s = str(stock_code).strip()
+    if not s:
+        return ""
+    s_lower = s.lower()
+
+    # 港股：hk00700 / HK00700
+    if s_lower.startswith("hk"):
+        digits = re.sub(r"\D", "", s_lower[2:])
+        if len(digits) == 5:
+            return f"hk{digits}"
+        # 非标准则回退为原始
+        return s_lower
+
+    # A股：取任意位置的 6 位数字（避免 'sh600519' / '600519.SH'）
+    m6 = re.search(r"(\d{6})", s_lower)
+    if m6:
+        return m6.group(1)
+
+    # 其他：只保留数字（可能是港股 5 位）
+    digits = re.sub(r"\D", "", s_lower)
+    return digits or s_lower
+
+
 def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
     """
     统一的股票名称获取函数
@@ -70,18 +102,19 @@ def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
     Returns:
         股票名称，如果无法获取则返回 f'股票{code}'
     """
-    if not stock_code or not isinstance(stock_code, str):
-        return f'股票{stock_code}'
+    normalized = _normalize_stock_code_for_name_lookup(stock_code)
+    if not normalized:
+        return f"股票{stock_code}"
     
     # 检查缓存
-    if use_cache and stock_code in _stock_name_cache:
-        return _stock_name_cache[stock_code]
+    if use_cache and normalized in _stock_name_cache:
+        return _stock_name_cache[normalized]
     
     # 1) 优先从 STOCK_NAME_MAP 获取（离线、稳定）
-    name = STOCK_NAME_MAP.get(stock_code)
+    name = STOCK_NAME_MAP.get(normalized)
     if name:
         if use_cache:
-            _stock_name_cache[stock_code] = name
+            _stock_name_cache[normalized] = name
         return name
     
     # 2) 尝试从实时行情获取（可能更全面）
@@ -93,22 +126,20 @@ def get_stock_name(stock_code: str, use_cache: bool = True) -> str:
             get_stock_name._fetcher_manager = DataFetcherManager()
         
         manager = get_stock_name._fetcher_manager
-        quote = manager.get_realtime_quote(stock_code)
+        quote = manager.get_realtime_quote(normalized)
         
         if quote and hasattr(quote, 'name') and quote.name:
             name = quote.name.strip()
             if name and not name.startswith('股票'):
                 if use_cache:
-                    _stock_name_cache[stock_code] = name
+                    _stock_name_cache[normalized] = name
                 return name
     except Exception as e:
-        logger.debug(f"从实时行情获取股票名称失败 {stock_code}: {e}")
+        logger.debug(f"从实时行情获取股票名称失败 {normalized}: {e}")
     
     # 3) 如果都失败，使用默认格式
-    default_name = f'股票{stock_code}'
-    if use_cache:
-        _stock_name_cache[stock_code] = default_name
-    return default_name
+    # 注意：不要缓存默认名，否则一次失败会导致后续永远无法更新为真实名称
+    return f"股票{normalized}"
 
 
 @dataclass
