@@ -16,7 +16,7 @@ from email.utils import formataddr
 import smtplib
 
 from src.config import Config
-from src.formatters import markdown_to_html_document
+from src.notification_sender.email_renderer import render_email_dashboard
 
 
 logger = logging.getLogger(__name__)
@@ -133,8 +133,7 @@ class EmailSender:
                 date_str = datetime.now().strftime('%Y-%m-%d')
                 subject = f"📈 股票智能分析报告 - {date_str}"
             
-            # 将 Markdown 转换为简单 HTML
-            html_content = markdown_to_html_document(content)
+            html_content = render_email_dashboard(content)
             
             # 构建邮件
             msg = MIMEMultipart('alternative')

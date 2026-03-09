@@ -172,11 +172,49 @@ class TestFeishuSender(unittest.TestCase):
 class TestEmailSender(unittest.TestCase):
     """Unit tests for EmailSender (config and receiver logic; send path covered via service)."""
 
+    _dashboard_markdown = """# 🎯 2026-03-09 决策仪表盘
+
+> 共分析 **1** 只股票 | 🟢买入:1 🟡观望:0 🔴卖出:0
+
+## 📊 分析结果摘要
+
+🟢 **宁德时代(300750)**: 买入 | 评分 88 | 趋势向上
+
+---
+
+## 🟢 宁德时代 (300750)
+
+### 📌 核心结论
+
+> **一句话决策**: 回踩 MA5 附近可分批布局。
+"""
+
     def test_send_returns_false_when_not_configured(self):
         cfg = _config()
         sender = EmailSender(cfg)
         result = sender.send_to_email("body")
         self.assertFalse(result)
+
+    @mock.patch("smtplib.SMTP_SSL")
+    def test_send_to_email_uses_email_dashboard_renderer_for_html_part(self, mock_smtp_ssl):
+        cfg = _config(
+            email_sender="a@qq.com",
+            email_password="p",
+            email_receivers=["b@qq.com"],
+        )
+        sender = EmailSender(cfg)
+
+        result = sender.send_to_email(self._dashboard_markdown)
+
+        self.assertTrue(result)
+        server = mock_smtp_ssl.return_value
+        server.send_message.assert_called_once()
+        message = server.send_message.call_args[0][0]
+        html_part = message.get_payload()[1]
+        html = html_part.get_payload(decode=True).decode("utf-8")
+        self.assertIn("股票总结", html)
+        self.assertIn("宁德时代", html)
+        self.assertIn("300750", html)
 
     def test_get_receivers_for_stocks_no_groups_returns_default(self):
         cfg = _config(
