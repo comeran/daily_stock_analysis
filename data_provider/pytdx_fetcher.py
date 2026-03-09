@@ -117,6 +117,7 @@ class PytdxFetcher(BaseFetcher):
         ("59.173.18.140", 7709),   # 武汉
         ("180.153.39.51", 7709),   # 杭州
     ]
+    # Pytdx get_security_list returns at most 1000 items per page
     SECURITY_LIST_PAGE_SIZE = 1000
     
     def __init__(self, hosts: Optional[List[Tuple[str, int]]] = None):
